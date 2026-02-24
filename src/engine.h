@@ -42,16 +42,41 @@ public:
 	virtual void sub(const Reg src, const uint32 a) const = 0;
 	// dst = dst + src
 	virtual void add(const Reg dst, const Reg src) const = 0;
+	virtual void mul_add(const Reg dst, const Reg mul_src, const Reg add_src, const uint32 a = 1) const
+	{
+		mul(dst, mul_src, a);
+		add(dst, add_src);
+	}
 	// dst = dst - src
 	virtual void sub_reg(const Reg dst, const Reg src) const = 0;
-	virtual void addsub(const Reg sum_out, const Reg diff_out, const Reg a, const Reg b) const = 0;
+	virtual void addsub(const Reg sum_out, const Reg diff_out, const Reg a, const Reg b) const
+	{
+		copy(sum_out, a);
+		add(sum_out, b);
 
-	virtual void square_mul_copy(const Reg src, const Reg dst_copy, const uint32 a = 1) const = 0;
+		copy(diff_out, a);
+		sub_reg(diff_out, b);
+	}
 
-	virtual void mul_copy(const Reg dst, const Reg src, const Reg dst_copy, const uint32 a = 1) const = 0;
+	virtual void square_mul_copy(const Reg src, const Reg dst_copy, const uint32 a = 1) const
+	{
+		square_mul(src, a);
+		copy(dst_copy, src);
+	}
+
+	virtual void mul_copy(const Reg dst, const Reg src, const Reg dst_copy, const uint32 a = 1) const
+	{
+		mul(dst, src, a);
+		copy(dst_copy, dst);
+	}
+
 	virtual void addsub_copy(const Reg sum, const Reg diff, const Reg sum_copy, const Reg diff_copy,
-							const Reg a, const Reg b) const = 0;
-
+							const Reg a, const Reg b) const
+	{
+		addsub(sum, diff, a, b);
+		copy(sum_copy, sum);
+		copy(diff_copy, diff);
+	}
 
 	// get size in bytes of a register
 	virtual size_t get_register_data_size() const = 0;
