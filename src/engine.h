@@ -68,6 +68,10 @@ public:
 		square_mul(src, a);
 		copy(dst_copy, src);
 	}
+	virtual void mul_new(const Reg dst, const Reg src, const uint32 a = 1) const
+	{
+		mul(dst, src, a);
+	}
 
 	virtual void mul_copy(const Reg dst, const Reg src, const Reg dst_copy, const uint32 a = 1) const
 	{
