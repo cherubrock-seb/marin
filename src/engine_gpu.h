@@ -63,6 +63,9 @@ private:
 	cl_kernel _carry_weight_mul_p1 = nullptr, _carry_weight_add_p1 = nullptr, _carry_weight_add_neg_p1 = nullptr, _carry_weight_p2 = nullptr, _carry_weight_addsub_p1 = nullptr, _carry_weight_p2x2 = nullptr, _carry_weight_mul_p1_copy = nullptr, _carry_weight_p2_copy = nullptr, _carry_weight_addsub_p1_copy = nullptr, _carry_weight_p2x2_copy = nullptr, _carry_weight_mul2_unit_p1 = nullptr;
 	cl_kernel _copy = nullptr, _subtract = nullptr;
 	cl_kernel _carry_weight_muladd_p1 = nullptr, _carry_weight_muladd_p2 = nullptr;
+	cl_kernel _carry_weight_add_neg_p1_full = nullptr, _carry_weight_p2_full = nullptr;
+	cl_kernel _carry_weight_add_neg_p1_raw = nullptr, _carry_weight_norm_serial = nullptr, _carry_weight_weightback = nullptr;
+	cl_kernel _carry_prefix_sub = nullptr;
 
 	std::vector<cl_kernel> _kernels;
 
@@ -325,7 +328,12 @@ public:
 		CREATE_KERNEL_CARRY(carry_weight_addsub_p1_copy);
 		CREATE_KERNEL_CARRY(carry_weight_p2x2_copy);
 		CREATE_KERNEL_CARRY(carry_weight_mul2_unit_p1);
-
+		CREATE_KERNEL_CARRY(carry_weight_add_neg_p1_full);
+		CREATE_KERNEL_CARRY(carry_weight_p2_full);
+		CREATE_KERNEL_CARRY(carry_weight_add_neg_p1_raw);
+		CREATE_KERNEL_CARRY(carry_weight_norm_serial);
+		CREATE_KERNEL_CARRY(carry_weight_weightback);
+		CREATE_KERNEL_CARRY(carry_prefix_sub);
 		_copy = _create_kernel("copy");
 		_set_kernel_arg(_copy, 0, sizeof(cl_mem), &_reg);
 		_kernels.push_back(_copy);
@@ -517,17 +525,30 @@ public:
 
 	}
 	
-	void carry_weight_sub(const size_t dst, const size_t src)
-	{
-		const uint32 offset_y = uint32(dst * _n), offset_x = uint32(src * _n);
-		_set_kernel_arg(_carry_weight_add_neg_p1, 4, sizeof(uint32), &offset_y);
-		_set_kernel_arg(_carry_weight_add_neg_p1, 5, sizeof(uint32), &offset_x);
-		_execute_kernel(_carry_weight_add_neg_p1, _n / 4, 1u << _lcwm_wg_size);
-		_set_kernel_arg(_carry_weight_p2, 4, sizeof(uint32), &offset_y);
-		_execute_kernel(_carry_weight_p2, (_n / 4) >> _lcwm_wg_size);
+     void carry_weight_sub(const size_t dst, const size_t src)
+     {
+         const uint32 offset_y = uint32(dst * _n), offset_x = uint32(src * _n);
+         if (_n == 524288u)
+         {
+             _set_kernel_arg(_carry_weight_add_neg_p1_raw, 4, sizeof(uint32), &offset_y);
+             _set_kernel_arg(_carry_weight_add_neg_p1_raw, 5, sizeof(uint32), &offset_x);
+             _execute_kernel(_carry_weight_add_neg_p1_raw, _n / 4, 1u << _lcwm_wg_size);
 
-	}
+             _set_kernel_arg(_carry_weight_norm_serial, 4, sizeof(uint32), &offset_y);
+             _execute_kernel(_carry_weight_norm_serial, 1, 1);
 
+             _set_kernel_arg(_carry_weight_weightback, 4, sizeof(uint32), &offset_y);
+             _execute_kernel(_carry_weight_weightback, _n / 4, 1u << _lcwm_wg_size);
+             return;
+         }
+
+         _set_kernel_arg(_carry_weight_add_neg_p1, 4, sizeof(uint32), &offset_y);
+         _set_kernel_arg(_carry_weight_add_neg_p1, 5, sizeof(uint32), &offset_x);
+         _execute_kernel(_carry_weight_add_neg_p1, _n / 4, 1u << _lcwm_wg_size);
+
+         _set_kernel_arg(_carry_weight_p2, 4, sizeof(uint32), &offset_y);
+         _execute_kernel(_carry_weight_p2, (_n / 4) >> _lcwm_wg_size);
+      }
 	
 	void carry_weight_addsub(const size_t sum, const size_t diff, const size_t a, const size_t b)
 	{
@@ -669,6 +690,101 @@ public:
 		ibdwt::weights_widths(n, q, _weight.data(), _digit_width.data());
 		_gpu->write_weight(_weight.data());
 		_gpu->write_width(_digit_width.data());
+		{
+			if (_n == 524288u)
+			{
+				auto mask_for_width = [](uint8_t w) -> uint64_t {
+					if (w == 0)  return 0ull;
+					if (w >= 64) return ~0ull;
+					return (1ull << w) - 1ull;
+				};
+                std::vector<uint64> a_u(_n), a_w(_n), z_w(_n, 0), out_w(_n), out_u(_n);
+
+                uint64_t seed = 0x9E3779B97F4A7C15ull;
+                for (size_t i = 0; i < _n; ++i) {
+                    seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+                    const uint64_t m = mask_for_width(_digit_width[i]);
+                    a_u[i] = seed & m;
+                }
+
+                for (size_t k = 0; k < _n; ++k)
+                {
+                    const uint64 w = _weight[2 * (k / 4 + (k % 4) * (_n / 4)) + 0];
+                    a_w[k] = mod_mul(uint32(a_u[k]), w);
+                }
+
+                auto decode_unweighted = [&](const std::vector<uint64> & src_w, std::vector<uint64> & dst_u)
+                {
+                    uint64 c = 0;
+                    for (size_t k = 0; k < _n; ++k)
+                    {
+                        const uint64 wi = _weight[2 * (k / 4 + (k % 4) * (_n / 4)) + 1];
+                        dst_u[k] = adc(mod_mul(src_w[k], wi), _digit_width[k], c);
+                    }
+                    while (c != 0)
+                    {
+                        for (size_t k = 0; k < _n; ++k)
+                        {
+                            dst_u[k] = adc(dst_u[k], _digit_width[k], c);
+                            if (c == 0) break;
+                        }
+                    }
+                };
+
+                // Test 1: a - a == 0 (unweighted)
+                _gpu->write_reg(a_w.data(), 0);
+                _gpu->write_reg(a_w.data(), 1);
+                _gpu->carry_weight_sub(0, 1);
+                _gpu->read_reg(out_w.data(), 0);
+                decode_unweighted(out_w, out_u);
+
+                size_t bad = (size_t)-1;
+                for (size_t i = 0; i < _n; ++i) {
+                    if (out_u[i] != 0) { bad = i; break; }
+                }
+                if (bad != (size_t)-1) {
+                    std::cout << "[SELFTEST sub_reg] FAIL a-a != 0 at i=" << bad
+                            << " out=" << out_u[bad]
+                            << " width=" << int(_digit_width[bad]) << std::endl;
+                } else {
+                    std::cout << "[SELFTEST sub_reg] OK a-a==0" << std::endl;
+                }
+
+                // Test 2: a - 0 == a (unweighted)
+                _gpu->write_reg(a_w.data(), 0);
+                _gpu->write_reg(z_w.data(), 1);
+                _gpu->carry_weight_sub(0, 1);
+                _gpu->read_reg(out_w.data(), 0);
+                decode_unweighted(out_w, out_u);
+
+                bad = (size_t)-1;
+                for (size_t i = 0; i < _n; ++i) {
+                    if (out_u[i] != a_u[i]) { bad = i; break; }
+                }
+                if (bad != (size_t)-1) {
+                    std::cout << "[SELFTEST sub_reg] FAIL a-0 != a at i=" << bad
+                            << " out=" << out_u[bad]
+                            << " a=" << a_u[bad]
+                            << " width=" << int(_digit_width[bad]) << std::endl;
+                } else {
+                    std::cout << "[SELFTEST sub_reg] OK a-0==a" << std::endl;
+                }
+ 
+                 // Bonus: sanity sur digit_width (utile si edge-case à 524288)
+                 uint8_t mn = 255, mx = 0;
+                 size_t cnt0 = 0, cnt64 = 0;
+                 for (size_t i = 0; i < _n; ++i) {
+                     uint8_t w = _digit_width[i];
+                     mn = std::min(mn, w);
+                     mx = std::max(mx, w);
+                     if (w == 0) cnt0++;
+                     if (w >= 64) cnt64++;
+                 }
+                 std::cout << "[SELFTEST widths] min=" << int(mn) << " max=" << int(mx)
+                         << " count(w==0)=" << cnt0 << " count(w>=64)=" << cnt64 << std::endl;
+             
+			}
+		}
 	}
 
 	virtual ~engine_gpu()
