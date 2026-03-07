@@ -172,7 +172,46 @@ private:
 		if (s.size() <= 2 * edge) return s;
 		return s.substr(0, edge) + "..." + s.substr(s.size() - edge);
 	}
+	static void print_diff_window(const mpz_t & got, const mpz_t & expect)
+	{
+		mpz_t diff;
+		mpz_init(diff);
+		mpz_xor(diff, got, expect);
 
+		if (mpz_sgn(diff) == 0)
+		{
+			std::cerr << "[SELFTEST] no diff\n";
+			mpz_clear(diff);
+			return;
+		}
+
+		const size_t bit = mpz_scan1(diff, 0);          // premier bit différent (LSB)
+		const size_t hi  = mpz_sizeinbase(diff, 2) - 1; // bit différent le plus haut
+
+		std::cerr << "[SELFTEST] first_diff_bit=" << bit
+				<< " highest_diff_bit=" << hi << '\n';
+
+		mpz_clear(diff);
+	}
+	static std::string mpz_hex_window_around_bit(const mpz_t & z, const size_t bit, const size_t span_hex = 16)
+	{
+		char * raw = mpz_get_str(nullptr, 16, z);
+		std::string s = (raw != nullptr) ? std::string(raw) : std::string("<null>");
+		void (*freefunc)(void *, size_t);
+		mp_get_memory_functions(nullptr, nullptr, &freefunc);
+		if (raw != nullptr) freefunc(raw, std::strlen(raw) + 1);
+
+		if (s == "<null>") return s;
+
+		const size_t total_hex = s.size();
+		const size_t hex_from_right = bit / 4;
+		const size_t pos = (hex_from_right < total_hex) ? (total_hex - 1 - hex_from_right) : 0;
+
+		const size_t begin = (pos > span_hex) ? (pos - span_hex) : 0;
+		const size_t end = std::min(total_hex, pos + span_hex + 1);
+
+		return s.substr(begin, end - begin);
+	}
 	static void print_mismatch(const char * const test_name, const char * const op,
 		const size_t iter, const size_t step, const size_t reg,
 		const mpz_t & got, const mpz_t & expect)
@@ -198,6 +237,17 @@ private:
 				<< " diff_bits=" << diff_bits
 				<< " msb_diff=" << msb_diff << '\n';
 
+		print_diff_window(got, expect);
+
+		//mpz_t diff;
+		mpz_init(diff);
+		mpz_xor(diff, got, expect);
+		if (mpz_sgn(diff) != 0)
+		{
+			const size_t hi = mpz_sizeinbase(diff, 2) - 1;
+			std::cerr << "[SELFTEST] got@diff    = 0x" << mpz_hex_window_around_bit(got, hi) << '\n';
+			std::cerr << "[SELFTEST] expect@diff = 0x" << mpz_hex_window_around_bit(expect, hi) << '\n';
+		}
 		mpz_clear(diff);
 	}
 
