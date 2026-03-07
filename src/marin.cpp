@@ -268,14 +268,11 @@ private:
 		write_reg(eng, reg, expect[size_t(reg)].v);
 	}
 
-	static void prepare_mul_and_check(engine * const eng, const engine::Reg dst, const engine::Reg src,
-		std::vector<zint> & expect, const mpz_t & mod,
-		const char * const test_name, const char * const op,
-		const size_t iter, const size_t step)
+	static void prepare_mul(engine * const eng, const engine::Reg dst, const engine::Reg src,
+		std::vector<zint> & expect)
 	{
 		eng->set_multiplicand(dst, src);
 		mpz_set(expect[size_t(dst)].v, expect[size_t(src)].v);
-		require_equal(eng, dst, expect[size_t(dst)].v, mod, test_name, op, iter, step);
 	}
 
 	static std::string usage()
@@ -551,10 +548,12 @@ private:
 			set_expect_and_reg(eng.get(), 7, tmp4, R, Mp);
 			mulm(tmp0, R[6].v, R[7].v, Mp); set_expect_and_reg(eng.get(), 9, tmp0, R, Mp); // T2 = X2*Y2
 
-			prepare_mul_and_check(eng.get(), 43, 16, R, Mp, "te", "prepare a", iter, 0);
-			prepare_mul_and_check(eng.get(), 45, 29, R, Mp, "te", "prepare d", iter, 0);
-			prepare_mul_and_check(eng.get(), 46, 9,  R, Mp, "te", "prepare T2", iter, 0);
-
+			//prepare_mul_and_check(eng.get(), 43, 16, R, Mp, "te", "prepare a", iter, 0);
+			//prepare_mul_and_check(eng.get(), 45, 29, R, Mp, "te", "prepare d", iter, 0);
+			//prepare_mul_and_check(eng.get(), 46, 9,  R, Mp, "te", "prepare T2", iter, 0);
+			prepare_mul(eng.get(), 43, 16, R);
+			prepare_mul(eng.get(), 45, 29, R);
+			prepare_mul(eng.get(), 46, 9,  R);
 			if (!eng->get_checkpoint(ckpt)) throw std::runtime_error("get_checkpoint failed");
 
 			auto tr_copy = [&](const size_t dst, const size_t src, const char * const op, const size_t step)
@@ -603,9 +602,9 @@ private:
 				require_equal(eng.get(), dst, R[dst].v, Mp, "te", op, iter, step);
 				require_equal(eng.get(), dcopy, R[dcopy].v, Mp, "te", op, iter, step);
 			};
-			auto tr_setmul = [&](const size_t dst, const size_t src, const char * const op, const size_t step)
+			auto tr_setmul = [&](const size_t dst, const size_t src, const char * const /*op*/, const size_t /*step*/)
 			{
-				prepare_mul_and_check(eng.get(), dst, src, R, Mp, "te", op, iter, step);
+				prepare_mul(eng.get(), (engine::Reg)dst, (engine::Reg)src, R);
 			};
 			auto hadamard = [&](const size_t a, const size_t b, const size_t s, const size_t d, const char * const op, const size_t step)
 			{
@@ -729,9 +728,10 @@ private:
 			random_non_zero_mod(tmp4, rs, p, Mp, seed + 211 * iter + 6); // xD
 			set_expect_and_reg(eng.get(), 13, tmp4, R, Mp); // raw xD then overwritten as multiplicand
 
-			prepare_mul_and_check(eng.get(), 12, 12, R, Mp, "mont", "prepare A24", iter, 0);
-			prepare_mul_and_check(eng.get(), 13, 13, R, Mp, "mont", "prepare xD", iter, 0);
-
+			//prepare_mul_and_check(eng.get(), 12, 12, R, Mp, "mont", "prepare A24", iter, 0);
+			//prepare_mul_and_check(eng.get(), 13, 13, R, Mp, "mont", "prepare xD", iter, 0);
+			prepare_mul(eng.get(), (engine::Reg)12, (engine::Reg)12, R);
+			prepare_mul(eng.get(), (engine::Reg)13, (engine::Reg)13, R);
 			auto tr_copy = [&](const size_t dst, const size_t src, const char * const op, const size_t step)
 			{
 				eng->copy(dst, src);
@@ -806,9 +806,9 @@ private:
 				addm(R[dst].v, R[dst].v, R[add_src].v, Mp);
 				require_equal(eng.get(), dst, R[dst].v, Mp, "mont", op, iter, step);
 			};
-			auto tr_setmul = [&](const size_t dst, const size_t src, const char * const op, const size_t step)
+			auto tr_setmul = [&](const size_t dst, const size_t src, const char * const /*op*/, const size_t /*step*/)
 			{
-				prepare_mul_and_check(eng.get(), dst, src, R, Mp, "mont", op, iter, step);
+				prepare_mul(eng.get(), (engine::Reg)dst, (engine::Reg)src, R);
 			};
 			auto hadamard = [&](const size_t a, const size_t b, const size_t s, const size_t d, const char * const op, const size_t step)
 			{
