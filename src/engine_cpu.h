@@ -11,6 +11,7 @@ Please give feedback to the authors if improvement is realized. It is distribute
 #include "ibdwt.h"
 
 #include <cstring>
+#include <stdexcept>
 
 struct uint64_2
 {
