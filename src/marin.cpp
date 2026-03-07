@@ -161,6 +161,18 @@ private:
 		return s;
 	}
 
+	static std::string mpz_hex_edge(const mpz_t & z, const size_t edge = 24)
+	{
+		char * raw = mpz_get_str(nullptr, 16, z);
+		std::string s = (raw != nullptr) ? std::string(raw) : std::string("<null>");
+		void (*freefunc)(void *, size_t);
+		mp_get_memory_functions(nullptr, nullptr, &freefunc);
+		if (raw != nullptr) freefunc(raw, std::strlen(raw) + 1);
+
+		if (s.size() <= 2 * edge) return s;
+		return s.substr(0, edge) + "..." + s.substr(s.size() - edge);
+	}
+
 	static void print_mismatch(const char * const test_name, const char * const op,
 		const size_t iter, const size_t step, const size_t reg,
 		const mpz_t & got, const mpz_t & expect)
@@ -169,25 +181,23 @@ private:
 		mpz_init(diff);
 		mpz_xor(diff, got, expect);
 
-		char * got_s = mpz_get_str(nullptr, 16, got);
-		char * exp_s = mpz_get_str(nullptr, 16, expect);
-		char * diff_s = mpz_get_str(nullptr, 16, diff);
+		const size_t got_bits = mpz_sizeinbase(got, 2);
+		const size_t exp_bits = mpz_sizeinbase(expect, 2);
+		const size_t diff_bits = (mpz_sgn(diff) == 0) ? 0 : mpz_sizeinbase(diff, 2);
+		const long msb_diff = (mpz_sgn(diff) == 0) ? -1 : long(diff_bits - 1);
 
 		std::cerr << "[SELFTEST][" << test_name << "] MISMATCH iter=" << iter;
 		if (step != 0) std::cerr << " step=" << step;
-		std::cerr << " op=" << op << " reg=R" << reg << std::endl;
-		std::cerr << "[SELFTEST] got    = 0x" << got_s << std::endl;
-		std::cerr << "[SELFTEST] expect = 0x" << exp_s << std::endl;
-		std::cerr << "[SELFTEST] xor    = 0x" << diff_s << std::endl;
-		std::cerr << "[SELFTEST] got_bits=" << mpz_sizeinbase(got, 2)
-				<< " expect_bits=" << mpz_sizeinbase(expect, 2)
-				<< " xor_bits=" << mpz_sizeinbase(diff, 2) << std::endl;
+		std::cerr << " op=" << op << " reg=R" << reg << '\n';
 
-		void (*freefunc)(void *, size_t);
-		mp_get_memory_functions(nullptr, nullptr, &freefunc);
-		if (got_s)  freefunc(got_s,  std::strlen(got_s)  + 1);
-		if (exp_s)  freefunc(exp_s,  std::strlen(exp_s)  + 1);
-		if (diff_s) freefunc(diff_s, std::strlen(diff_s) + 1);
+		std::cerr << "[SELFTEST] got    = 0x" << mpz_hex_edge(got) << '\n';
+		std::cerr << "[SELFTEST] expect = 0x" << mpz_hex_edge(expect) << '\n';
+		std::cerr << "[SELFTEST] xor    = 0x" << mpz_hex_edge(diff) << '\n';
+		std::cerr << "[SELFTEST] got_bits=" << got_bits
+				<< " expect_bits=" << exp_bits
+				<< " diff_bits=" << diff_bits
+				<< " msb_diff=" << msb_diff << '\n';
+
 		mpz_clear(diff);
 	}
 
@@ -671,7 +681,13 @@ private:
 				tr_copy(38, 34, "eADD copy S1", step);
 				tr_setmul(11, 36, "eADD setmul S2", step);
 				tr_mul(38, 11, "eADD mul S1S2", step);
+				require_equal(eng.get(), 38, R[38].v, Mp, "te", "before sub X1X2", iter, step);
+				require_equal(eng.get(), 30, R[30].v, Mp, "te", "check X1X2", iter, step);
+				require_equal(eng.get(), 31, R[31].v, Mp, "te", "check Y1Y2", iter, step);
+				//tr_sub(38, 30, "eADD sub X1X2", step);
 				tr_sub(38, 30, "eADD sub X1X2", step);
+				require_equal(eng.get(), 38, R[38].v, Mp, "te", "after sub X1X2", iter, step);
+				//tr_sub(38, 31, "eADD sub Y1Y2", step);
 				tr_sub(38, 31, "eADD sub Y1Y2", step);
 				tr_mul(39, 43, "eADD mul aX1X2", step);
 				tr_copy(40, 31, "eADD copy Y1Y2", step);
