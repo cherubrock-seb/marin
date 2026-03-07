@@ -453,9 +453,19 @@ private:
 			addm(E, E, C, Mp);
 			require_equal(eng.get(), R4, E, Mp, "basic", "mul_add", iter, 0);
 
-			eng->copy(R4, R0);
+			/*eng->copy(R4, R0);
 			eng->copy(R5, R2);
 			eng->mul_pair_unit(R4, R1, R5, R3);
+			mulm(E, A, B, Mp);
+			require_equal(eng.get(), R4, E, Mp, "basic", "mul_pair_unit dst0", iter, 0);
+			mulm(E, C, D, Mp);
+			require_equal(eng.get(), R5, E, Mp, "basic", "mul_pair_unit dst1", iter, 0);*/
+
+			eng->copy(R4, R0);
+			eng->copy(R5, R2);
+			eng->copy(R8, R1);
+			eng->copy(R9, R3);
+			eng->mul_pair_unit(R4, R8, R5, R9);
 			mulm(E, A, B, Mp);
 			require_equal(eng.get(), R4, E, Mp, "basic", "mul_pair_unit dst0", iter, 0);
 			mulm(E, C, D, Mp);
@@ -470,7 +480,6 @@ private:
 			require_equal(eng.get(), R4, E, Mp, "basic", "mul_pair_prepared dst0", iter, 0);
 			mulm(E, C, D, Mp);
 			require_equal(eng.get(), R5, E, Mp, "basic", "mul_pair_prepared dst1", iter, 0);
-
 			if (!eng->get_data(blob, R0)) throw std::runtime_error("get_data failed");
 			eng->set(R10, uint32_t(0));
 			if (!eng->set_data(R10, blob)) throw std::runtime_error("set_data failed");
