@@ -335,8 +335,11 @@ public:
 		_set_kernel_arg(_subtract, 1, sizeof(cl_mem), &_weight);
 		_set_kernel_arg(_subtract, 2, sizeof(cl_mem), &_digit_width);
 		_kernels.push_back(_subtract);
-
-
+		_subtract_reg = _create_kernel("subtract_reg");
+		_set_kernel_arg(_subtract_reg, 0, sizeof(cl_mem), &_reg);
+		_set_kernel_arg(_subtract_reg, 1, sizeof(cl_mem), &_weight);
+		_set_kernel_arg(_subtract_reg, 2, sizeof(cl_mem), &_digit_width);
+		_kernels.push_back(_subtract_reg);
 	}
 
 	void release_kernels()
@@ -1298,6 +1301,13 @@ public:
 	
 	void sub_reg(const Reg dst, const Reg src) const override
 	{
+		// For large pure power-of-2 transforms, use the "safe" subtraction path:
+		// it implements x - y as x + (Mp - y) and uses carry_weight_sub_p2 to handle wrap-around correctly.
+		if (avoid_fused_x2_path())
+		{
+			_gpu->carry_weight_sub_safe(size_t(dst), size_t(src));
+			return;
+		}
 		_gpu->carry_weight_sub(size_t(dst), size_t(src));
 	}
 

@@ -1743,40 +1743,79 @@ void carry_weight_add_neg_p1(__global uint64 * restrict reg, __global uint64 * r
     __global const uint64 * restrict weight, __global const uint_8 * restrict width,
     const sz_t offset_y, const sz_t offset_x)
 {
-    __global uint64_4 * restrict y = (__global uint64_4 *)(&reg[offset_y]);
-    __global const uint64_4 * restrict x = (__global const uint64_4 *)(&reg[offset_x]);
-    __global const uint64_2 * restrict weight2 = (__global const uint64_2 *)(weight);
-    __global const uint_8_4 * restrict width4  = (__global const uint_8_4 *)(width);
-    __local  uint64 cl[CWM_WG_SZ];
+__global uint64_4 * restrict y = (__global uint64_4 *)(&reg[offset_y]);
+__global const uint64_4 * restrict x = (__global const uint64_4 *)(&reg[offset_x]);
+__global const uint64_2 * restrict weight2 = (__global const uint64_2 *)(weight);
+__global const uint_8_4 * restrict width4  = (__global const uint_8_4 *)(width);
 
-    const sz_t gid = (sz_t)get_global_id(0), lid = (sz_t)get_local_id(0);
+const sz_t gid = (sz_t)get_global_id(0);
+const sz_t lid = (sz_t)get_local_id(0);
 
-    uint64_2 w2[4]; loadg2(4, w2, &weight2[gid], N_SZ / 4);
-    const uint64_4 w  = (uint64_4)(w2[0].s0, w2[1].s0, w2[2].s0, w2[3].s0);
-    const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
-    const uint_8_4  wd = width4[gid];
+// Carry-lookahead (generate/propagate) inside the work-group.
+// g = carry-out with carry-in 0
+// p = carry-out with carry-in 1 when g==0 (propagate)
+__local uint lg[CWM_WG_SZ];
+__local uint lp[CWM_WG_SZ];
 
-    uint64 c = 0;
-    uint64_4 u  = mod_mul4(y[gid], wi);
-    uint64_4 vx = mod_mul4(x[gid], wi);
-    uint64_4 vn = neg_mp4(vx, wd);   // Mp - X
+uint64_2 w2[4]; loadg2(4, w2, &weight2[gid], N_SZ / 4);
+const uint64_4 w  = (uint64_4)(w2[0].s0, w2[1].s0, w2[2].s0, w2[3].s0);
+const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
+const uint_8_4  wd = width4[gid];
 
-    // Carry produced by THIS block
-    u = addc4(u, vn, wd, &c);
-    cl[lid] = c;
+uint64 g = 0;
+uint64_4 u  = mod_mul4(y[gid], wi);
+const uint64_4 vx = mod_mul4(x[gid], wi);
+const uint64_4 vn = neg_mp4(vx, wd);   // Mp - X  (always non-negative per digit)
 
+// Base add (carry-in = 0): u0 and g
+u = addc4(u, vn, wd, &g);
+
+// Propagate bit: if g==0, does adding carry-in 1 produce a carry-out?
+uint p = 0u;
+if ((uint)g == 0u)
+{
+    uint64 t = 1;
+    uint64_4 tmp = u;
+    tmp = adc4_c(tmp, wd, &t);
+    (void)tmp;
+    p = (uint)t; // 0 or 1
+}
+
+lg[lid] = (uint)g;
+lp[lid] = p;
+barrier(CLK_LOCAL_MEM_FENCE);
+
+// Inclusive scan with operator: (g2,p2) after (g1,p1) => (g, p) where:
+// g = g2 | (p2 & g1), p = p2 & p1
+for (sz_t ofs = 1; ofs < (sz_t)CWM_WG_SZ; ofs <<= 1)
+{
+    const uint g1 = (lid >= ofs) ? lg[lid - ofs] : 0u;
+    const uint p1 = (lid >= ofs) ? lp[lid - ofs] : 1u;
     barrier(CLK_LOCAL_MEM_FENCE);
 
-    // Apply previous-block carry AND keep the new carry-out
-    uint64 extra = (lid == 0) ? 0 : cl[lid - 1];
-    u = adc4_c(u, wd, &extra);
-
-    y[gid] = mod_mul4(u, w);
-
-    if (lid == CWM_WG_SZ - 1)
+    if (lid >= ofs)
     {
-        carry[(gid != N_SZ / 4 - 1) ? gid / CWM_WG_SZ + 1 : 0] = c + extra;
+        const uint g2 = lg[lid];
+        const uint p2 = lp[lid];
+        lg[lid] = g2 | (p2 & g1);
+        lp[lid] = p2 & p1;
     }
+    barrier(CLK_LOCAL_MEM_FENCE);
+}
+
+const uint carry_in = (lid == 0) ? 0u : lg[lid - 1];
+
+// Apply carry-in (0/1) to digits. We can ignore carry-out here: lg[...] already encodes it.
+u = adc4(u, wd, (uint64)carry_in);
+
+y[gid] = mod_mul4(u, w);
+
+if (lid == (CWM_WG_SZ - 1))
+{
+    // carry-out of the whole group (0/1) -> next group (wrap-around)
+    const uint cout = lg[lid];
+    carry[(gid != N_SZ / 4 - 1) ? gid / CWM_WG_SZ + 1 : 0] = (uint64)cout;
+}
 }
 
 __kernel
@@ -1785,49 +1824,86 @@ void carry_weight_addsub_p1(__global uint64 * restrict const reg, __global uint6
 	__global const uint64 * restrict const weight, __global const uint_8 * restrict const width,
 	const sz_t off_sum, const sz_t off_diff, const sz_t off_a, const sz_t off_b)
 {
-	__global uint64_4 * restrict const yS = (__global uint64_4 *)(&reg[off_sum]);
-	__global uint64_4 * restrict const yD = (__global uint64_4 *)(&reg[off_diff]);
-	__global const uint64_4 * restrict const a = (__global const uint64_4 *)(&reg[off_a]);
-	__global const uint64_4 * restrict const b = (__global const uint64_4 *)(&reg[off_b]);
-	__global const uint64_2 * restrict const weight2 = (__global const uint64_2 *)(weight);
-	__global const uint_8_4 * restrict const width4 = (__global const uint_8_4 *)(width);
+__global uint64_4 * restrict const yS = (__global uint64_4 *)(&reg[off_sum]);
+__global uint64_4 * restrict const yD = (__global uint64_4 *)(&reg[off_diff]);
+__global const uint64_4 * restrict const a = (__global const uint64_4 *)(&reg[off_a]);
+__global const uint64_4 * restrict const b = (__global const uint64_4 *)(&reg[off_b]);
+__global const uint64_2 * restrict const weight2 = (__global const uint64_2 *)(weight);
+__global const uint_8_4 * restrict const width4 = (__global const uint_8_4 *)(width);
 
-	const sz_t gid = (sz_t)get_global_id(0);
-	const sz_t lid = (sz_t)get_local_id(0);
-	const sz_t grp = (sz_t)get_group_id(0);
-	const sz_t ngr = (sz_t)get_num_groups(0);
+const sz_t gid = (sz_t)get_global_id(0);
+const sz_t lid = (sz_t)get_local_id(0);
+const sz_t grp = (sz_t)get_group_id(0);
+const sz_t ngr = (sz_t)get_num_groups(0);
 
-	__local uint2 lcc[CWM_WG_SZ];
+// Carry-lookahead (generate/propagate) for both lanes (sum, diff)
+__local uint2 lg[CWM_WG_SZ]; // generate
+__local uint2 lp[CWM_WG_SZ]; // propagate
 
-	uint64_2 w2[4]; loadg2(4, w2, &weight2[gid], N_SZ / 4);
-	const uint64_4 w  = (uint64_4)(w2[0].s0, w2[1].s0, w2[2].s0, w2[3].s0);
-	const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
-	const uint_8_4 wd = width4[gid];
+uint64_2 w2[4]; loadg2(4, w2, &weight2[gid], N_SZ / 4);
+const uint64_4 w  = (uint64_4)(w2[0].s0, w2[1].s0, w2[2].s0, w2[3].s0);
+const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
+const uint_8_4 wd = width4[gid];
 
-	uint64 cS = 0, cD = 0;
-	const uint64_4 av = mod_mul4(a[gid], wi);
-	const uint64_4 bv = mod_mul4(b[gid], wi);
-	const uint64_4 nb = neg_mp4(bv, wd);
+uint64 gS = 0, gD = 0;
+const uint64_4 av = mod_mul4(a[gid], wi);
+const uint64_4 bv = mod_mul4(b[gid], wi);
+const uint64_4 nb = neg_mp4(bv, wd);
 
-	uint64_4 uS = addc4(av, bv, wd, &cS);
-	uint64_4 uD = addc4(av, nb, wd, &cD);
+uint64_4 uS = addc4(av, bv, wd, &gS); // sum, carry-in = 0
+uint64_4 uD = addc4(av, nb, wd, &gD); // diff via + (Mp-b), carry-in = 0
 
-	lcc[lid] = (uint2)((uint)cS, (uint)cD);
+uint pS = 0u, pD = 0u;
+if ((uint)gS == 0u)
+{
+	uint64 t = 1;
+	uint64_4 tmp = uS;
+	tmp = adc4_c(tmp, wd, &t);
+	(void)tmp;
+	pS = (uint)t;
+}
+if ((uint)gD == 0u)
+{
+	uint64 t = 1;
+	uint64_4 tmp = uD;
+	tmp = adc4_c(tmp, wd, &t);
+	(void)tmp;
+	pD = (uint)t;
+}
+
+lg[lid] = (uint2)((uint)gS, (uint)gD);
+lp[lid] = (uint2)(pS, pD);
+barrier(CLK_LOCAL_MEM_FENCE);
+
+for (sz_t ofs = 1; ofs < (sz_t)CWM_WG_SZ; ofs <<= 1)
+{
+	const uint2 g1 = (lid >= ofs) ? lg[lid - ofs] : (uint2)(0u, 0u);
+	const uint2 p1 = (lid >= ofs) ? lp[lid - ofs] : (uint2)(1u, 1u);
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	const uint2 prev = (lid == 0) ? (uint2)(0u,0u) : lcc[lid - 1];
-	uS = adc4(uS, wd, (uint64)prev.x);
-	uD = adc4(uD, wd, (uint64)prev.y);
-
-	yS[gid] = mod_mul4(uS, w);
-	yD[gid] = mod_mul4(uD, w);
-
-	if (lid == (CWM_WG_SZ - 1))
+	if (lid >= ofs)
 	{
-		uint j = (uint)(grp + 1u);
-		if (j == (uint)ngr) j = 0u;
-		carry[j] = (uint64)((uint64)lcc[lid].x | ((uint64)lcc[lid].y << 32));
+		const uint2 g2 = lg[lid];
+		const uint2 p2 = lp[lid];
+		lg[lid] = g2 | (p2 & g1);
+		lp[lid] = p2 & p1;
 	}
+	barrier(CLK_LOCAL_MEM_FENCE);
+}
+
+const uint2 cin = (lid == 0) ? (uint2)(0u, 0u) : lg[lid - 1];
+uS = adc4(uS, wd, (uint64)cin.x);
+uD = adc4(uD, wd, (uint64)cin.y);
+
+yS[gid] = mod_mul4(uS, w);
+yD[gid] = mod_mul4(uD, w);
+
+if (lid == (CWM_WG_SZ - 1))
+{
+	uint j = (uint)(grp + 1u);
+	if (j == (uint)ngr) j = 0u;
+	carry[j] = (uint64)((uint64)lg[lid].x | ((uint64)lg[lid].y << 32));
+}
 }
 
 __kernel
@@ -1868,53 +1944,89 @@ void carry_weight_addsub_p1_copy(__global uint64 * restrict const reg, __global 
 	const sz_t off_sum, const sz_t off_diff, const sz_t off_sum_copy, const sz_t off_diff_copy,
 	const sz_t off_a, const sz_t off_b)
 {
-	__global uint64_4 * restrict const yS  = (__global uint64_4 *)(&reg[off_sum]);
-	__global uint64_4 * restrict const yD  = (__global uint64_4 *)(&reg[off_diff]);
-	__global uint64_4 * restrict const ySc = (__global uint64_4 *)(&reg[off_sum_copy]);
-	__global uint64_4 * restrict const yDc = (__global uint64_4 *)(&reg[off_diff_copy]);
-	__global const uint64_4 * restrict const a = (__global const uint64_4 *)(&reg[off_a]);
-	__global const uint64_4 * restrict const b = (__global const uint64_4 *)(&reg[off_b]);
-	__global const uint64_2 * restrict const weight2 = (__global const uint64_2 *)(weight);
-	__global const uint_8_4 * restrict const width4 = (__global const uint_8_4 *)(width);
+__global uint64_4 * restrict const yS  = (__global uint64_4 *)(&reg[off_sum]);
+__global uint64_4 * restrict const yD  = (__global uint64_4 *)(&reg[off_diff]);
+__global uint64_4 * restrict const ySc = (__global uint64_4 *)(&reg[off_sum_copy]);
+__global uint64_4 * restrict const yDc = (__global uint64_4 *)(&reg[off_diff_copy]);
+__global const uint64_4 * restrict const a = (__global const uint64_4 *)(&reg[off_a]);
+__global const uint64_4 * restrict const b = (__global const uint64_4 *)(&reg[off_b]);
+__global const uint64_2 * restrict const weight2 = (__global const uint64_2 *)(weight);
+__global const uint_8_4 * restrict const width4 = (__global const uint_8_4 *)(width);
 
-	const sz_t gid = (sz_t)get_global_id(0);
-	const sz_t lid = (sz_t)get_local_id(0);
+const sz_t gid = (sz_t)get_global_id(0);
+const sz_t lid = (sz_t)get_local_id(0);
 
-	__local uint2 lcc[CWM_WG_SZ];
+__local uint2 lg[CWM_WG_SZ];
+__local uint2 lp[CWM_WG_SZ];
 
-	uint64_2 w2[4]; loadg2(4, w2, &weight2[gid], N_SZ / 4);
-	const uint64_4 w  = (uint64_4)(w2[0].s0, w2[1].s0, w2[2].s0, w2[3].s0);
-	const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
-	const uint_8_4 wd = width4[gid];
+uint64_2 w2[4]; loadg2(4, w2, &weight2[gid], N_SZ / 4);
+const uint64_4 w  = (uint64_4)(w2[0].s0, w2[1].s0, w2[2].s0, w2[3].s0);
+const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
+const uint_8_4 wd = width4[gid];
 
-	const uint64_4 av = mod_mul4(a[gid], wi);
-	const uint64_4 bv = mod_mul4(b[gid], wi);
-	const uint64_4 nb = neg_mp4(bv, wd);
+const uint64_4 av = mod_mul4(a[gid], wi);
+const uint64_4 bv = mod_mul4(b[gid], wi);
+const uint64_4 nb = neg_mp4(bv, wd);
 
-	uint64 cS = 0, cD = 0;
-	uint64_4 uS = addc4(av, bv, wd, &cS);
-	uint64_4 uD = addc4(av, nb, wd, &cD);
+uint64 gS = 0, gD = 0;
+uint64_4 uS = addc4(av, bv, wd, &gS);
+uint64_4 uD = addc4(av, nb, wd, &gD);
 
-	lcc[lid] = (uint2)((uint)cS,(uint)cD);
+uint pS = 0u, pD = 0u;
+if ((uint)gS == 0u)
+{
+	uint64 t = 1;
+	uint64_4 tmp = uS;
+	tmp = adc4_c(tmp, wd, &t);
+	(void)tmp;
+	pS = (uint)t;
+}
+if ((uint)gD == 0u)
+{
+	uint64 t = 1;
+	uint64_4 tmp = uD;
+	tmp = adc4_c(tmp, wd, &t);
+	(void)tmp;
+	pD = (uint)t;
+}
+
+lg[lid] = (uint2)((uint)gS,(uint)gD);
+lp[lid] = (uint2)(pS, pD);
+barrier(CLK_LOCAL_MEM_FENCE);
+
+for (sz_t ofs = 1; ofs < (sz_t)CWM_WG_SZ; ofs <<= 1)
+{
+	const uint2 g1 = (lid >= ofs) ? lg[lid - ofs] : (uint2)(0u, 0u);
+	const uint2 p1 = (lid >= ofs) ? lp[lid - ofs] : (uint2)(1u, 1u);
 	barrier(CLK_LOCAL_MEM_FENCE);
 
-	const uint2 prev = (lid == 0) ? (uint2)(0u,0u) : lcc[lid - 1];
-	uS = adc4(uS, wd, (uint64)prev.x);
-	uD = adc4(uD, wd, (uint64)prev.y);
-
-	const uint64_4 outS = mod_mul4(uS, w);
-	const uint64_4 outD = mod_mul4(uD, w);
-
-	yS [gid] = outS;
-	yD [gid] = outD;
-	ySc[gid] = outS;
-	yDc[gid] = outD;
-
-	if (lid == (CWM_WG_SZ - 1))
+	if (lid >= ofs)
 	{
-		const sz_t j = ((gid != N_SZ / 4 - 1) ? (gid / CWM_WG_SZ + 1) : 0);
-		carry[j] = (uint64)((uint64)lcc[lid].x | ((uint64)lcc[lid].y << 32));
+		const uint2 g2 = lg[lid];
+		const uint2 p2 = lp[lid];
+		lg[lid] = g2 | (p2 & g1);
+		lp[lid] = p2 & p1;
 	}
+	barrier(CLK_LOCAL_MEM_FENCE);
+}
+
+const uint2 cin = (lid == 0) ? (uint2)(0u, 0u) : lg[lid - 1];
+uS = adc4(uS, wd, (uint64)cin.x);
+uD = adc4(uD, wd, (uint64)cin.y);
+
+const uint64_4 outS = mod_mul4(uS, w);
+const uint64_4 outD = mod_mul4(uD, w);
+
+yS [gid] = outS;
+yD [gid] = outD;
+ySc[gid] = outS;
+yDc[gid] = outD;
+
+if (lid == (CWM_WG_SZ - 1))
+{
+	const sz_t j = ((gid != N_SZ / 4 - 1) ? (gid / CWM_WG_SZ + 1) : 0);
+	carry[j] = (uint64)((uint64)lg[lid].x | ((uint64)lg[lid].y << 32));
+}
 }
 
 __kernel
