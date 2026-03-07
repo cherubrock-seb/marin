@@ -165,11 +165,30 @@ private:
 		const size_t iter, const size_t step, const size_t reg,
 		const mpz_t & got, const mpz_t & expect)
 	{
+		mpz_t diff;
+		mpz_init(diff);
+		mpz_xor(diff, got, expect);
+
+		char * got_s = mpz_get_str(nullptr, 16, got);
+		char * exp_s = mpz_get_str(nullptr, 16, expect);
+		char * diff_s = mpz_get_str(nullptr, 16, diff);
+
 		std::cerr << "[SELFTEST][" << test_name << "] MISMATCH iter=" << iter;
 		if (step != 0) std::cerr << " step=" << step;
 		std::cerr << " op=" << op << " reg=R" << reg << std::endl;
-		std::cerr << "[SELFTEST] got    = 0x" << mpz_hex_prefix(got) << std::endl;
-		std::cerr << "[SELFTEST] expect = 0x" << mpz_hex_prefix(expect) << std::endl;
+		std::cerr << "[SELFTEST] got    = 0x" << got_s << std::endl;
+		std::cerr << "[SELFTEST] expect = 0x" << exp_s << std::endl;
+		std::cerr << "[SELFTEST] xor    = 0x" << diff_s << std::endl;
+		std::cerr << "[SELFTEST] got_bits=" << mpz_sizeinbase(got, 2)
+				<< " expect_bits=" << mpz_sizeinbase(expect, 2)
+				<< " xor_bits=" << mpz_sizeinbase(diff, 2) << std::endl;
+
+		void (*freefunc)(void *, size_t);
+		mp_get_memory_functions(nullptr, nullptr, &freefunc);
+		if (got_s)  freefunc(got_s,  std::strlen(got_s)  + 1);
+		if (exp_s)  freefunc(exp_s,  std::strlen(exp_s)  + 1);
+		if (diff_s) freefunc(diff_s, std::strlen(diff_s) + 1);
+		mpz_clear(diff);
 	}
 
 	static void mod_norm(mpz_t & rop, const mpz_t & op, const mpz_t & mod)
