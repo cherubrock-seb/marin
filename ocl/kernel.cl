@@ -164,6 +164,56 @@ INLINE uint64_4 neg_mp4(const uint64_4 v, const uint_8_4 wd) {
     return r;
 }
 
+
+INLINE long carry_shift_signed(const long t, const uint bits, const uint64 mask)
+{
+	if (bits >= 64u) return 0;
+	if (t >= 0) return (t >> bits);
+	return -(long)((((uint64)(-t)) + mask) >> bits);
+}
+
+INLINE uint64 sub_digit_exact_mp(const uint64 yv, const uint64 xv, const uint bits, long * const carry)
+{
+	const uint64 m = mask_w(bits);
+	const uint64 ylo = yv & m;
+	const uint64 xlo = xv & m;
+	const long yhi = (bits >= 64u) ? 0 : (long)(yv >> bits);
+	const long xhi = (bits >= 64u) ? 0 : (long)(xv >> bits);
+	const long t = (long)ylo + (long)(m - xlo) + *carry;
+	const uint64 out = ((uint64)t) & m;
+	*carry = carry_shift_signed(t, bits, m) + yhi - xhi;
+	return out;
+}
+
+INLINE uint64 add_signed_digit_exact(const uint64 v, const uint bits, long * const carry)
+{
+	const uint64 m = mask_w(bits);
+	const long t = (long)(v & m) + *carry;
+	const uint64 out = ((uint64)t) & m;
+	*carry = carry_shift_signed(t, bits, m);
+	return out;
+}
+
+INLINE uint64_4 sub4_exact_mp(const uint64_4 yv, const uint64_4 xv, const uint_8_4 wd, long * const carry)
+{
+	uint64_4 r;
+	r.s0 = sub_digit_exact_mp(yv.s0, xv.s0, (uint)wd.s0, carry);
+	r.s1 = sub_digit_exact_mp(yv.s1, xv.s1, (uint)wd.s1, carry);
+	r.s2 = sub_digit_exact_mp(yv.s2, xv.s2, (uint)wd.s2, carry);
+	r.s3 = sub_digit_exact_mp(yv.s3, xv.s3, (uint)wd.s3, carry);
+	return r;
+}
+
+INLINE uint64_4 add_signed4_exact(const uint64_4 v, const uint_8_4 wd, long * const carry)
+{
+	uint64_4 r;
+	r.s0 = add_signed_digit_exact(v.s0, (uint)wd.s0, carry);
+	r.s1 = add_signed_digit_exact(v.s1, (uint)wd.s1, carry);
+	r.s2 = add_signed_digit_exact(v.s2, (uint)wd.s2, carry);
+	r.s3 = add_signed_digit_exact(v.s3, (uint)wd.s3, carry);
+	return r;
+}
+
 INLINE uint64_4 adc_mul4(const uint64_4 lhs, const uint32 a, const uint_8_4 width, uint64 * const carry)
 {
 	uint64_4 r;
@@ -1743,55 +1793,49 @@ void carry_weight_p2_copy(__global uint64 * restrict const reg, __global const u
 __kernel
 __attribute__((reqd_work_group_size(CWM_WG_SZ, 1, 1)))
 void carry_weight_add_neg_p1(__global uint64 * restrict reg, __global uint64 * restrict carry,
-    __global const uint64 * restrict weight, __global const uint_8 * restrict width,
-    const sz_t offset_y, const sz_t offset_x)
+	__global const uint64 * restrict weight, __global const uint_8 * restrict width,
+	const sz_t offset_y, const sz_t offset_x)
 {
-    __global uint64_4 * restrict y = (__global uint64_4 *)(&reg[offset_y]);
-    __global const uint64_4 * restrict x = (__global const uint64_4 *)(&reg[offset_x]);
-    __global const uint64_2 * restrict weight2 = (__global const uint64_2 *)(weight);
-    __global const uint_8_4 * restrict width4  = (__global const uint_8_4 *)(width);
+	__global uint64_4 * restrict y = (__global uint64_4 *)(&reg[offset_y]);
+	__global const uint64_4 * restrict x = (__global const uint64_4 *)(&reg[offset_x]);
+	__global const uint64_2 * restrict weight2 = (__global const uint64_2 *)(weight);
+	__global const uint_8_4 * restrict width4  = (__global const uint_8_4 *)(width);
 
-    const sz_t gid = (sz_t)get_global_id(0);
-    const sz_t lid = (sz_t)get_local_id(0);
-    const sz_t grp = (sz_t)get_group_id(0);
-    const sz_t ngr = (sz_t)get_num_groups(0);
-    const sz_t base = grp * (sz_t)CWM_WG_SZ;
+	const sz_t gid = (sz_t)get_global_id(0);
+	const sz_t lid = (sz_t)get_local_id(0);
+	const sz_t grp = (sz_t)get_group_id(0);
+	const sz_t ngr = (sz_t)get_num_groups(0);
+	const sz_t base = grp * (sz_t)CWM_WG_SZ;
 
-    // Per-thread load weights and unweight operands
-    uint64_2 w2[4]; loadg2(4, w2, &weight2[gid], N_SZ / 4);
-    const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
+	uint64_2 w2[4]; loadg2(4, w2, &weight2[gid], N_SZ / 4);
+	const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
 
-    __local uint64_4 lY[CWM_WG_SZ];
-    __local uint64_4 lX[CWM_WG_SZ];
+	__local uint64_4 lY[CWM_WG_SZ];
+	__local uint64_4 lX[CWM_WG_SZ];
 
-    lY[lid] = mod_mul4(y[gid], wi);
-    lX[lid] = mod_mul4(x[gid], wi);
+	lY[lid] = mod_mul4(y[gid], wi);
+	lX[lid] = mod_mul4(x[gid], wi);
 
-    barrier(CLK_LOCAL_MEM_FENCE);
+	barrier(CLK_LOCAL_MEM_FENCE);
 
-    if (lid == 0)
-    {
-        uint64 c = 0;
-        for (sz_t t = 0; t < (sz_t)CWM_WG_SZ; ++t)
-        {
-            const sz_t id = base + t;
+	if (lid == 0)
+	{
+		long c = 0;
+		for (sz_t t = 0; t < (sz_t)CWM_WG_SZ; ++t)
+		{
+			const sz_t id = base + t;
+			uint64_2 ww2[4]; loadg2(4, ww2, &weight2[id], N_SZ / 4);
+			const uint64_4 w  = (uint64_4)(ww2[0].s0, ww2[1].s0, ww2[2].s0, ww2[3].s0);
+			const uint_8_4  wd = width4[id];
+			const uint64_4 u = sub4_exact_mp(lY[t], lX[t], wd, &c);
+			y[id] = mod_mul4(u, w);
+		}
 
-            // Load per-block w and width
-            uint64_2 ww2[4]; loadg2(4, ww2, &weight2[id], N_SZ / 4);
-            const uint64_4 w  = (uint64_4)(ww2[0].s0, ww2[1].s0, ww2[2].s0, ww2[3].s0);
-            const uint_8_4  wd = width4[id];
-
-            const uint64_4 vn = neg_mp4(lX[t], wd);     // Mp - X (digit-wise)
-            uint64_4 u = addc4(lY[t], vn, wd, &c);      // exact ripple carry in this WG
-            y[id] = mod_mul4(u, w);
-        }
-
-        uint j = (uint)(grp + 1u);
-        if (j == (uint)ngr) j = 0u;
-        carry[j] = c;
-    }
+		uint j = (uint)(grp + 1u);
+		if (j == (uint)ngr) j = 0u;
+		carry[j] = as_ulong(c);
+	}
 }
-
 
 __kernel
 __attribute__((reqd_work_group_size(CWM_WG_SZ, 1, 1)))
@@ -2076,23 +2120,19 @@ void carry_weight_sub_p2(__global uint64 * restrict const reg, __global const ui
 
 	const sz_t gid = (sz_t)get_global_id(0);
 	const sz_t base = (sz_t)(CWM_WG_SZ * gid);
-
-	uint64 c = carry[gid];
+	long c = as_long(carry[gid]);
 	if (c == 0) return;
 
 	for (sz_t t = 0; t < (sz_t)CWM_WG_SZ; ++t)
 	{
 		const sz_t id = base + t;
-
 		uint64_2 w2[4]; loadg2(4, w2, &weight2[id], N_SZ / 4);
 		const uint64_4 w = (uint64_4)(w2[0].s0, w2[1].s0, w2[2].s0, w2[3].s0);
 		const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
 		const uint_8_4 wd = width4[id];
-
 		uint64_4 u = mod_mul4(x[id], wi);
-		u = adc4_c(u, wd, &c);
+		u = add_signed4_exact(u, wd, &c);
 		x[id] = mod_mul4(u, w);
-
 		if (c == 0) break;
 	}
 }
@@ -2107,44 +2147,34 @@ void carry_weight_sub_p2_phase(__global uint64 * restrict const reg, __global ui
 	__global const uint_8_4 * restrict const width4 = (__global const uint_8_4 *)(width);
 
 	const sz_t gid = (sz_t)get_global_id(0);
-
-	// process either even (phase=0) or odd (phase=1) groups
 	if (((uint)gid & 1u) != (phase & 1u)) return;
 
 	const sz_t ngr  = (sz_t)((N_SZ / 4) / (sz_t)CWM_WG_SZ);
 	const sz_t base = (sz_t)(CWM_WG_SZ * gid);
-
-	uint64 c = carry[gid];
+	long c = as_long(carry[gid]);
 	if (c == 0) return;
 
-	// consume the carry for this group
-	carry[gid] = 0;
-
+	carry[gid] = 0ul;
 	for (sz_t t = 0; t < (sz_t)CWM_WG_SZ; ++t)
 	{
 		const sz_t id = base + t;
-
 		uint64_2 w2[4]; loadg2(4, w2, &weight2[id], N_SZ / 4);
 		const uint64_4 w  = (uint64_4)(w2[0].s0, w2[1].s0, w2[2].s0, w2[3].s0);
 		const uint64_4 wi = (uint64_4)(w2[0].s1, w2[1].s1, w2[2].s1, w2[3].s1);
 		const uint_8_4  wd = width4[id];
-
 		uint64_4 u = mod_mul4(x[id], wi);
-		u = adc4_c(u, wd, &c);
+		u = add_signed4_exact(u, wd, &c);
 		x[id] = mod_mul4(u, w);
-
 		if (c == 0) break;
 	}
 
 	if (c != 0)
 	{
-		// forward remaining carry to next group (unique writer under the two-phase schedule)
 		const sz_t next_gid = (gid + 1 < ngr) ? (gid + 1) : 0;
-		carry[next_gid] += c;
+		const long next_c = as_long(carry[next_gid]) + c;
+		carry[next_gid] = as_ulong(next_c);
 	}
 }
-
-
 
 __kernel
 __attribute__((reqd_work_group_size(CWM_WG_SZ, 1, 1)))

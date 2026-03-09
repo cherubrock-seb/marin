@@ -1177,9 +1177,10 @@ public:
 	void mul_pair_unit(const Reg dst0, const Reg src0, const Reg dst1, const Reg src1) const override
 	{
 		set_multiplicand(src0, src0);
-		mul(dst0, src0);
+		mul_new_core(size_t(dst0), size_t(src0));
 		set_multiplicand(src1, src1);
-		mul(dst1, src1);
+		mul_new_core(size_t(dst1), size_t(src1));
+		_gpu->carry_weight_mul2_unit(size_t(dst0), size_t(dst1));
 	}
 	void mul_add(const Reg rdst, const Reg rsrc, const Reg radd, const uint32 a = 1) const override
 	{
@@ -1317,7 +1318,7 @@ public:
 			return;
 		}
 
-		_gpu->subtract_reg_strong(size_t(dst), size_t(src));
+		_gpu->carry_weight_sub_safe(size_t(dst), size_t(src));
 	}
 
 	void addsub(const Reg sum_out, const Reg diff_out, const Reg a, const Reg b) const override
@@ -1344,8 +1345,16 @@ public:
 						const Reg rdst1, const Reg rsrc1,
 						const uint32 a0 = 1, const uint32 a1 = 1) const override
 	{
-		mul(rdst0, rsrc0, a0);
-		mul(rdst1, rsrc1, a1);
+		if ((a0 != 1) || (a1 != 1))
+		{
+			mul(rdst0, rsrc0, a0);
+			mul(rdst1, rsrc1, a1);
+			return;
+		}
+
+		mul_new_core(size_t(rdst0), size_t(rsrc0));
+		mul_new_core(size_t(rdst1), size_t(rsrc1));
+		_gpu->carry_weight_mul2_unit(size_t(rdst0), size_t(rdst1));
 	}
 
 	void xdbl_tail_uv(const Reg x_out, const Reg z_out,
